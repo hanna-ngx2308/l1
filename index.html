@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title></title>
+</head>
+<body>
+이제 웹페이지를 하나 만들었어요
+</body>
+</html>
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>UNESCO - Country time series (MATH.PRIMARY)</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans KR", "Helvetica Neue", Arial; margin: 0; padding: 18px; background: #fafafa; }
+  h1 { margin: 0 0 12px 0; font-size: 20px; }
+  .chart-wrap { width: 100%; max-width: 1200px; margin: 0 auto; background: white; border-radius: 8px; padding: 12px; box-shadow: 0 6px 18px rgba(0,0,0,0.06); }
+  svg { width: 100%; height: 600px; display: block; }
+  .axis text { font-size: 12px; }
+  .line { fill: none; stroke-width: 1.6px; opacity: 0.6; cursor: pointer; }
+  .line:hover { opacity: 1; stroke-width: 3px; z-index: 10; }
+  .year-label { font-size: 12px; fill: #666; }
+  /* 큰 나라 이름 표시 (마우스 위치) */
+  .big-label {
+    position: absolute;
+    pointer-events: none;
+    font-weight: 800;
+    font-size: 40px;
+    color: rgba(40,40,40,0.95);
+    transform: translate(-50%,-120%);
+    white-space: nowrap;
+    text-shadow: 0 2px 8px rgba(255,255,255,0.85), 0 4px 12px rgba(0,0,0,0.15);
+    display: none;
+    z-index: 999;
+  }
+  .controls { display:flex; gap:8px; align-items:center; margin-bottom:8px; }
+  select { padding:6px 8px; font-size:13px; }
+  .legend { max-height:140px; overflow:auto; font-size:12px; margin-top:8px; }
+  .legend-item { display:inline-block; margin-right:8px; margin-bottom:6px; }
+  .dot { width:10px; height:10px; display:inline-block; vertical-align:middle; margin-right:4px; border-radius:2px; }
+</style>
+</head>
+<body>
+  <div class="chart-wrap">
+    <h1>UNESCO 학습 성취도 — 국가별 연도 시계열 (기본: MATH.PRIMARY)</h1>
+    <div class="controls">
+      <label for="indicator">지표: </label>
+      <select id="indicator">
+        <!-- 선택지는 JS에서 자동 채움 -->
+      </select>
+      <label style="margin-left:12px">필터(ISO 코드, 쉼표 구분, 빈칸 허용): </label>
+      <input id="filter-input" placeholder="예: KOR, JPN, FIN" style="padding:6px; margin-left:6px"/>
+      <button id="apply-filter" style="padding:6px 10px;">적용</button>
+      <button id="reset-filter" style="padding:6px 10px;">초기화</button>
+    </div>
+
+    <div id="chart"></div>
+    <div class="legend" id="legend"></div>
+  </div>
+
+  <div class="big-label" id="bigLabel"></div>
+
+<script src="https://unpkg.com/d3@7/dist/d3.min.js"></script>
+<script>
+(async () => {
+  // data.json 파일을 같은 폴더에 두세요
+  const raw = await fetch('data.json').then(r => r.json());
+  const records = raw.records || [];
+
+  // unique indicators present
+  const indicators = Array.from(new Set(records.map(d => d.indicatorId))).sort();
+
+  // DOM refs
+  const indicatorSelect = document.getElementById('indicator');
+  const legendEl = document.getElementById('legend');
+  const bigLabel = document.getElementById('bigLabel');
+  const filterInput = document.getElementById('filter-input');
+  const applyFilterBtn = document.getElementById('apply-filter');
+  const resetFilterBtn = document.getElementById('reset-filter');
+
+  // fill indicator dropdown
+  indicators.forEach(ind => {
+    const opt = document.createElement('option');
+    opt.value = ind; opt.textContent = ind;
+    indicatorSelect.appendChild(opt);
+  });
+  // default to MATH.PRIMARY if exists
+  if (indicators.includes('MATH.PRIMARY')) indicatorSelect.value = 'MATH.PRIMARY';
+
+  function prepareAndDraw() {
+    const indicator = indicatorSelect.value;
+    // filter by indicator
+    const rec = records.filter(d => d.indicatorId === indicator && d.value !== null && !isNaN(d.value));
+    // nest by geoUnit
+    const nested = d3.group(rec, d => d.geoUnit);
+    // convert to array of {country, values: [{year,value}, ...]}
+    const series = Array.from(nested, ([country, vals]) => {
+      return {
+        country,
+        values: vals.map(v => ({ year: +v.year, value: +v.value })).sort((a,b)=>a.year-b.year)
+      };
+    });
+
+    // optional filtering by user input codes
+    const filterText = (filterInput.value || '').trim();
+    let filteredSeries = series;
+    if (filterText) {
+      const wanted = filterText.split(',').map(s=>s.trim().toUpperCase()).filter(Boolean);
+      filteredSeries = series.filter(s => wanted.includes(s.country.toUpperCase()));
+      if (filteredSeries.length === 0) {
+        // if none matched, keep original but show nothing in legend
+        filteredSeries = [];
+      }
+    }
+
+    drawChart(filteredSeries.length ? filteredSeries : series, indicator);
+  }
+
+  function drawChart(series, indicator) {
+    // clear
+    d3.select('#chart').selectAll('*').remove();
+    legendEl.innerHTML = '';
+
+    const margin = {top: 30, right: 30, bottom: 40, left: 60};
+    const width = Math.min(1100, document.querySelector('.chart-wrap').clientWidth) - margin.left - margin.right;
+    const height = 560 - margin.top - margin.bottom;
+
+    const svg = d3.select('#chart').append('svg')
+      .attr('viewBox', `0 0 ${width + margin.left + margin.right} ${height + margin.top + margin.bottom}`)
+      .style('width','100%')
+      .style('height','600px');
+
+    const g = svg.append('g').attr('transform', `translate(${margin.left},${margin.top})`);
+
+    // collect years and values extents
+    const allYears = Array.from(new Set(series.flatMap(s => s.values.map(v=>v.year)))).sort((a,b)=>a-b);
+    const x = d3.scaleLinear()
+      .domain(d3.extent(allYears)).nice()
+      .range([0, width]);
+
+    const y = d3.scaleLinear()
+      .domain([0, d3.max(series.flatMap(s => s.values.map(v=>v.value))) || 100]).nice()
+      .range([height, 0]);
+
+    const xAxis = d3.axisBottom(x).tickFormat(d3.format("d")).ticks(Math.min(10, allYears.length));
+    const yAxis = d3.axisLeft(y);
+
+    g.append('g').attr('transform', `translate(0,${height})`).call(xAxis);
+    g.append('g').call(yAxis);
+
+    // color palette
+    const color = d3.scaleOrdinal(d3.schemeTableau10).domain(series.map(s=>s.country));
+
+    // line generator (use linear)
+    const line = d3.line()
+      .defined(d => d.value !== null && !isNaN(d.value))
+      .x(d => x(d.year))
+      .y(d => y(d.value));
+
+    // group for lines
+    const linesG = g.append('g').attr('class','lines');
+
+    // draw each series
+    const pathSel = linesG.selectAll('.series')
+      .data(series, d => d.country)
+      .join('g')
+      .attr('class','series');
+
+    pathSel.append('path')
+      .attr('class','line')
+      .attr('d', d => line(d.values))
+      .attr('stroke', d => color(d.country))
+      .attr('stroke-linejoin','round')
+      .attr('stroke-linecap','round')
+      .attr('data-country', d => d.country)
+      .on('mouseover', function(event, d) {
+        // bring to front
+        this.parentNode.parentNode.appendChild(this.parentNode);
+        d3.select(this).raise().transition().duration(120).style('opacity',1).attr('stroke-width',3.2);
+        showBigLabel(d.country, event.pageX, event.pageY);
+      })
+      .on('mousemove', function(event, d) {
+        showBigLabel(d.country, event.pageX, event.pageY);
+      })
+      .on('mouseout', function(event, d) {
+        d3.select(this).transition().duration(120).style('opacity',0.6).attr('stroke-width',1.6);
+        hideBigLabel();
+      });
+
+    // tooltip circles for visible points (hidden by default)
+    pathSel.selectAll('.point')
+      .data(d => d.values.map(v => ({country: d.country, year: v.year, value: v.value})))
+      .join('circle')
+      .attr('r', 2.6)
+      .attr('cx', d => x(d.year))
+      .attr('cy', d => y(d.value))
+      .attr('fill', d => color(d.country))
+      .style('opacity', 0.0) // invisible but useful for pointer
+      .on('mouseover', (event,d) => showBigLabel(d.country, event.pageX, event.pageY))
+      .on('mouseout', hideBigLabel);
+
+    // small legend (click country to highlight)
+    const legendItems = legendEl;
+    series.slice(0, 120).forEach(s => { // limit legend size to avoid overload
+      const item = document.createElement('div');
+      item.className = 'legend-item';
+      const dot = document.createElement('span');
+      dot.className = 'dot';
+      dot.style.background = color(s.country);
+      item.appendChild(dot);
+      const text = document.createElement('span');
+      text.textContent = s.country;
+      item.appendChild(text);
+      item.onclick = () => {
+        // highlight clicked country
+        d3.selectAll('.line').style('opacity', 0.08).attr('stroke-width',1.2);
+        d3.selectAll(`.line[data-country="${s.country}"]`).style('opacity',1).attr('stroke-width',3.8);
+        showBigLabel(s.country, window.innerWidth/2, window.innerHeight/2);
+        setTimeout(hideBigLabel, 1500);
+      };
+      legendItems.appendChild(item);
+    });
+
+    // axes labels
+    svg.append('text').attr('x', margin.left + width/2).attr('y', margin.top + height + 36)
+      .attr('text-anchor','middle').attr('class','year-label').text('Year');
+
+    svg.append('text').attr('transform',`translate(${14},${margin.top + height/2}) rotate(-90)`)
+      .attr('text-anchor','middle').attr('class','year-label').text('Value');
+
+    // helper label functions
+    function showBigLabel(country, pageX, pageY) {
+      bigLabel.style.left = (pageX) + 'px';
+      bigLabel.style.top = (pageY) + 'px';
+      bigLabel.textContent = country;
+      bigLabel.style.display = 'block';
+    }
+    function hideBigLabel() {
+      bigLabel.style.display = 'none';
+    }
+  }
+
+  // initial draw
+  prepareAndDraw();
+
+  // handlers
+  indicatorSelect.addEventListener('change', () => prepareAndDraw());
+  applyFilterBtn.addEventListener('click', () => prepareAndDraw());
+  resetFilterBtn.addEventListener('click', () => {
+    filterInput.value = '';
+    prepareAndDraw();
+  });
+
+  // responsive redraw on resize (throttled)
+  let to;
+  window.addEventListener('resize', () => {
+    clearTimeout(to);
+    to = setTimeout(()=> prepareAndDraw(), 200);
+  });
+
+})();
+</script>
+</body>
+</html>
